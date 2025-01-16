@@ -399,6 +399,10 @@ class gradingform_simplefeedbackrubric_renderer extends plugin_renderer_base {
             } else {
                 $criterionvalue = null;
             }
+            // Add sorting of levels by ID
+            if (isset($criterion['levels']) && is_array($criterion['levels'])) {
+                ksort($criterion['levels'], SORT_NUMERIC);
+            }
             foreach ($criterion['levels'] as $levelid => $level) {
                 $level['id'] = $levelid;
                 $level['class'] = $this->get_css_class_suffix($levelcnt++, count($criterion['levels']) - 1);
