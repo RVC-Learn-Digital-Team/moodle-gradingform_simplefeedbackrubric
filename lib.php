@@ -298,7 +298,7 @@ class gradingform_simplefeedbackrubric_controller extends gradingform_controller
              LEFT JOIN {gradingform_sfrbric_criteria} rc ON (rc.definitionid = gd.id)
              LEFT JOIN {gradingform_sfrbric_levels} rl ON (rl.criterionid = rc.id)
                  WHERE gd.areaid = :areaid AND gd.method = :method
-              ORDER BY rc.sortorder";
+              ORDER BY rc.sortorder, rl.id"; // Added rl.id to order by level id
         $params = array('areaid' => $this->areaid, 'method' => $this->get_method_name());
 
         $rs = $DB->get_recordset_sql($sql, $params);
