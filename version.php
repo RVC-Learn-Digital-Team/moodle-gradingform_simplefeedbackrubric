@@ -30,6 +30,6 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component  = 'gradingform_simplefeedbackrubric';
-$plugin->version    = 2025011601;
+$plugin->version    = 2025021201;
 $plugin->requires   = 2014110400;
 $plugin->maturity   = MATURITY_STABLE;
