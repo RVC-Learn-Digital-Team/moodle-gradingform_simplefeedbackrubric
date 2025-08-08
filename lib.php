@@ -409,6 +409,8 @@ class gradingform_simplefeedbackrubric_controller extends gradingform_controller
         foreach ($old->simplefeedbackrubric['criteria'] as $oldcritid => $oldcrit) {
             unset($oldcrit['id']);
             if (isset($oldcrit['levels'])) {
+                // Sort levels by ID to maintain correct order when creating template
+                ksort($oldcrit['levels'], SORT_NUMERIC);
                 foreach ($oldcrit['levels'] as $oldlevid => $oldlev) {
                     unset($oldlev['id']);
                     $oldcrit['levels']['NEWID'.$newlevid] = $oldlev;
