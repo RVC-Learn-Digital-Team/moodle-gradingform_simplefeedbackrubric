@@ -1,10 +1,91 @@
 M.gradingform_simplefeedbackrubric = {};
 
+// Add this helper function at the beginning of the file
+M.gradingform_simplefeedbackrubric.getEditor = function(Y) {
+    // Try Atto first
+    var attoEditor = Y.one('.editor_atto_content');
+    if (attoEditor) {
+        return {
+            element: attoEditor,
+            type: 'atto'
+        };
+    }
+    
+    // Try TinyMCE 
+    var tinyEditor = Y.one('#id_assignfeedbackcomments_editoreditable') || 
+                     Y.one('.tox-edit-area iframe') || 
+                     Y.one('iframe[id*="editable"]');
+    if (tinyEditor) {
+        return {
+            element: tinyEditor,
+            type: 'tinymce'
+        };
+    }
+    
+    return null;
+};
+
+M.gradingform_simplefeedbackrubric.getEditorContent = function(Y, editor) {
+    if (!editor) return '';
+    
+    if (editor.type === 'atto') {
+        return editor.element._node.innerHTML;
+    } else if (editor.type === 'tinymce') {
+        // For TinyMCE, we need to access the iframe content
+        var iframe = editor.element;
+        if (iframe.get('tagName').toLowerCase() === 'iframe') {
+            var doc = iframe._node.contentDocument || iframe._node.contentWindow.document;
+            return doc.body.innerHTML;
+        } else {
+            return editor.element.get('innerHTML');
+        }
+    }
+    return '';
+};
+
+M.gradingform_simplefeedbackrubric.setEditorContent = function(Y, editor, content) {
+    if (!editor) return;
+    
+    if (editor.type === 'atto') {
+        editor.element.setContent(content);
+    } else if (editor.type === 'tinymce') {
+        var iframe = editor.element;
+        if (iframe.get('tagName').toLowerCase() === 'iframe') {
+            var doc = iframe._node.contentDocument || iframe._node.contentWindow.document;
+            doc.body.innerHTML = content;
+        } else {
+            editor.element.set('innerHTML', content);
+        }
+    }
+};
+
+M.gradingform_simplefeedbackrubric.focusEditor = function(Y, editor) {
+    if (!editor) return;
+    
+    if (editor.type === 'atto') {
+        editor.element.focus();
+    } else if (editor.type === 'tinymce') {
+        // TinyMCE focus handling
+        var iframe = editor.element;
+        if (iframe.get('tagName').toLowerCase() === 'iframe') {
+            iframe._node.contentWindow.focus();
+        } else {
+            editor.element.focus();
+        }
+    }
+};
+
 /**
  * This function is called for each simplefeedbackrubric on page.
  */
 M.gradingform_simplefeedbackrubric.init = function(Y, options) {
-    var editortext = Y.one('.editor_atto_content')._node.innerHTML;
+    var editor = M.gradingform_simplefeedbackrubric.getEditor(Y);
+    if (!editor) {
+        console.warn('No supported editor found');
+        return;
+    }
+    
+    var editortext = M.gradingform_simplefeedbackrubric.getEditorContent(Y, editor);
     var pattern = new RegExp(/(<.*?>|\ )/);
     while (editortext.match(pattern)) {
         editortext = editortext.replace(pattern, '');
@@ -16,7 +97,7 @@ M.gradingform_simplefeedbackrubric.init = function(Y, options) {
                 editortext += '<span name="comment-criteria-' + criterion[i] + '"></span>';
             }
         }
-        Y.one('.editor_atto_content').setContent(editortext);
+        M.gradingform_simplefeedbackrubric.setEditorContent(Y, editor, editortext);
     }
     Y.on('click', M.gradingform_simplefeedbackrubric.levelclick,
         '#simplefeedbackrubric-' + options.name + ' .level', null, Y, options.name, options.autopopulatecomments);
@@ -38,13 +119,16 @@ M.gradingform_simplefeedbackrubric.levelclick = function(e, Y, name, autopopulat
     }
 
     if (autopopulatecomments) {
+        var editor = M.gradingform_simplefeedbackrubric.getEditor(Y);
+        if (!editor) return;
+        
         var elementid = e._currentTarget.id;
         var pattern = new RegExp(/(?:advancedgrading-criteria-)(.*?)(?:-levels-)(\d+)/);
         var matches = elementid.match(pattern);
         var criteria = matches[1];
 
         // The current text in the comment.
-        var currentcommenttext = Y.one('.editor_atto_content')._node.innerHTML;
+        var currentcommenttext = M.gradingform_simplefeedbackrubric.getEditorContent(Y, editor);
 
         // The text in the rubric block which has been clicked.
         var clickedleveltext = e._currentTarget.innerText.trim();
@@ -107,9 +191,9 @@ M.gradingform_simplefeedbackrubric.levelclick = function(e, Y, name, autopopulat
         }
 
         if (newcommenttext) {
-            Y.one('.editor_atto_content').setContent(newcommenttext);
+            M.gradingform_simplefeedbackrubric.setEditorContent(Y, editor, newcommenttext);
             var x = window.scrollX, y = window.scrollY;
-            Y.one('.editor_atto_content').focus();
+            M.gradingform_simplefeedbackrubric.focusEditor(Y, editor);
             window.scrollTo(x, y);
         }
     }
