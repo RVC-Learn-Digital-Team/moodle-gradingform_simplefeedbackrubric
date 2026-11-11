@@ -47,6 +47,27 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
     };
 
     /**
+     * True if a TinyMCE editor is initialised and still attached to the page.
+     *
+     * In the assignment grader, moving to the next student replaces the grading panel:
+     * the old TinyMCE editor is destroyed and a new one is created with the same id.
+     * For a moment tinymce.get(id) can still return the old, detached editor.
+     *
+     * @param {Object} ed TinyMCE editor
+     * @return {Boolean}
+     */
+    NS.isLiveTinyEditor = function(ed) {
+        if (!ed || !ed.initialized || ed.removed || ed.destroyed) {
+            return false;
+        }
+        var body = ed.getBody();
+        var container = typeof ed.getContainer === 'function' ? ed.getContainer() : null;
+        var textarea = typeof ed.getElement === 'function' ? ed.getElement() : null;
+        return !!(body && container && document.body.contains(container) &&
+            (!textarea || document.body.contains(textarea)));
+    };
+
+    /**
      * Return an editor adapter for the feedback editor if it is ready, otherwise null.
      *
      * @param {String} textareaid
@@ -60,7 +81,7 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
         var tiny = window.tinymce || window.tinyMCE;
         if (tiny && typeof tiny.get === 'function') {
             var ed = tiny.get(textareaid);
-            if (ed && ed.initialized && ed.getBody()) {
+            if (NS.isLiveTinyEditor(ed)) {
                 return NS.tinyAdapter(ed);
             }
         }
@@ -126,10 +147,29 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
                 var run = function() {
                     fn(ed.getBody());
                 };
+                var done = false;
                 if (ed.undoManager && typeof ed.undoManager.transact === 'function') {
-                    ed.undoManager.transact(run);
-                } else {
+                    try {
+                        ed.undoManager.transact(function() {
+                            run();
+                            done = true;
+                        });
+                    } catch (ex) {
+                        // Undo bookkeeping failed (e.g. no selection yet); still make the change.
+                        if (window.console) {
+                            window.console.warn('gradingform_simplefeedbackrubric: undo transaction failed', ex);
+                        }
+                    }
+                }
+                if (!done) {
                     run();
+                    if (ed.undoManager && typeof ed.undoManager.add === 'function') {
+                        try {
+                            ed.undoManager.add();
+                        } catch (ex) {
+                            // Ignore: the content change itself has been made.
+                        }
+                    }
                 }
                 ed.setDirty(true);
                 if (typeof ed.dispatch === 'function') {
@@ -290,8 +330,9 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
         }, selector + ' .level');
 
         if (options.autopopulatecomments) {
-            NS.whenEditorReady(options, function(editor) {
-                state.editor = editor;
+            // Only used to report (in the console) when the editor never turns up.
+            NS.whenEditorReady(options, function() {
+                return;
             });
         }
     };
@@ -335,11 +376,12 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
         if (!options.autopopulatecomments) {
             return;
         }
-        var editor = state.editor || NS.getEditorNow(NS.findEditorTextareaId(options));
+        // Look the editor up on every click: in the grader the panel (and its editor) is
+        // replaced for each student, so a reference kept from earlier may be stale.
+        var editor = NS.getEditorNow(NS.findEditorTextareaId(options));
         if (!editor) {
             return;
         }
-        state.editor = editor;
 
         var matches = (el.get('id') || '').match(/-criteria-(.+?)-levels-(\d+)$/);
         if (!matches) {
