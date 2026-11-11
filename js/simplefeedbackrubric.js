@@ -1,211 +1,355 @@
-M.gradingform_simplefeedbackrubric = {};
-
-// Add this helper function at the beginning of the file
-M.gradingform_simplefeedbackrubric.getEditor = function(Y) {
-    // Try Atto first
-    var attoEditor = Y.one('.editor_atto_content');
-    if (attoEditor) {
-        return {
-            element: attoEditor,
-            type: 'atto'
-        };
-    }
-    
-    // Try TinyMCE 
-    var tinyEditor = Y.one('#id_assignfeedbackcomments_editoreditable') || 
-                     Y.one('.tox-edit-area iframe') || 
-                     Y.one('iframe[id*="editable"]');
-    if (tinyEditor) {
-        return {
-            element: tinyEditor,
-            type: 'tinymce'
-        };
-    }
-    
-    return null;
-};
-
-M.gradingform_simplefeedbackrubric.getEditorContent = function(Y, editor) {
-    if (!editor) return '';
-    
-    if (editor.type === 'atto') {
-        return editor.element._node.innerHTML;
-    } else if (editor.type === 'tinymce') {
-        // For TinyMCE, we need to access the iframe content
-        var iframe = editor.element;
-        if (iframe.get('tagName').toLowerCase() === 'iframe') {
-            var doc = iframe._node.contentDocument || iframe._node.contentWindow.document;
-            return doc.body.innerHTML;
-        } else {
-            return editor.element.get('innerHTML');
-        }
-    }
-    return '';
-};
-
-M.gradingform_simplefeedbackrubric.setEditorContent = function(Y, editor, content) {
-    if (!editor) return;
-    
-    if (editor.type === 'atto') {
-        editor.element.setContent(content);
-    } else if (editor.type === 'tinymce') {
-        var iframe = editor.element;
-        if (iframe.get('tagName').toLowerCase() === 'iframe') {
-            var doc = iframe._node.contentDocument || iframe._node.contentWindow.document;
-            doc.body.innerHTML = content;
-        } else {
-            editor.element.set('innerHTML', content);
-        }
-    }
-};
-
-M.gradingform_simplefeedbackrubric.focusEditor = function(Y, editor) {
-    if (!editor) return;
-    
-    if (editor.type === 'atto') {
-        editor.element.focus();
-    } else if (editor.type === 'tinymce') {
-        // TinyMCE focus handling
-        var iframe = editor.element;
-        if (iframe.get('tagName').toLowerCase() === 'iframe') {
-            iframe._node.contentWindow.focus();
-        } else {
-            editor.element.focus();
-        }
-    }
-};
-
 /**
- * This function is called for each simplefeedbackrubric on page.
+ * Grading-screen behaviour for the Simple Feedback Rubric.
+ *
+ * Handles level selection and, when "auto-populate comments" is on, writes the
+ * selected level's text into the feedback comments editor.
+ *
+ * Supported editors:
+ *  - TinyMCE (Moodle 4.5+): driven through the TinyMCE API (undo, dirty flag, change event).
+ *  - Atto (Moodle 4.5 only): edits Atto's contenteditable area, which Atto copies back
+ *    to the textarea when the form is submitted.
+ *
+ * Each criterion's text is held in a block marked with data-sfr-criterion="<criterionid>".
+ * Feedback written by older versions used <span name="comment-criteria-<criterionid>">; those
+ * markers are still recognised and are replaced with the new format when edited.
+ *
+ * @package    gradingform_simplefeedbackrubric
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-M.gradingform_simplefeedbackrubric.init = function(Y, options) {
-    var editor = M.gradingform_simplefeedbackrubric.getEditor(Y);
-    if (!editor) {
-        console.warn('No supported editor found');
-        return;
-    }
-    
-    var editortext = M.gradingform_simplefeedbackrubric.getEditorContent(Y, editor);
-    var pattern = new RegExp(/(<.*?>|\ )/);
-    while (editortext.match(pattern)) {
-        editortext = editortext.replace(pattern, '');
-    }
-    if (!editortext || editortext.length === 0) {
-        if (options.criterionordering) {
-            var criterion = options.criterion;
-            for (var i = 0; i < criterion.length; ++i) {
-                editortext += '<span name="comment-criteria-' + criterion[i] + '"></span>';
+
+M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
+
+(function(NS) {
+    var MARKER_ATTR = 'data-sfr-criterion';
+    var LEGACY_NAME_PREFIX = 'comment-criteria-';
+    var DEFAULT_EDITOR_ID = 'id_assignfeedbackcomments_editor';
+    var DEFAULT_EDITOR_NAME = 'assignfeedbackcomments_editor[text]';
+    var WAIT_INTERVAL_MS = 250;
+    var WAIT_TIMEOUT_MS = 30000;
+
+    /**
+     * Work out the id of the feedback textarea.
+     *
+     * @param {Object} options init options from PHP
+     * @return {String|null}
+     */
+    NS.findEditorTextareaId = function(options) {
+        var id = (options && options.editorid) || DEFAULT_EDITOR_ID;
+        if (document.getElementById(id)) {
+            return id;
+        }
+        // Forms can be rendered with a suffixed id (e.g. in the grader app); find it by name.
+        var byname = document.querySelector('textarea[name="' + DEFAULT_EDITOR_NAME + '"]');
+        if (byname && byname.id) {
+            return byname.id;
+        }
+        return null;
+    };
+
+    /**
+     * Return an editor adapter for the feedback editor if it is ready, otherwise null.
+     *
+     * @param {String} textareaid
+     * @return {Object|null}
+     */
+    NS.getEditorNow = function(textareaid) {
+        if (!textareaid) {
+            return null;
+        }
+        // TinyMCE.
+        var tiny = window.tinymce || window.tinyMCE;
+        if (tiny && typeof tiny.get === 'function') {
+            var ed = tiny.get(textareaid);
+            if (ed && ed.initialized && ed.getBody()) {
+                return NS.tinyAdapter(ed);
             }
         }
-        M.gradingform_simplefeedbackrubric.setEditorContent(Y, editor, editortext);
-    }
-    Y.on('click', M.gradingform_simplefeedbackrubric.levelclick,
-        '#simplefeedbackrubric-' + options.name + ' .level', null, Y, options.name, options.autopopulatecomments);
-    Y.all('#simplefeedbackrubric-' + options.name + ' .radio').setStyle('display', 'none');
-    Y.all('#simplefeedbackrubric-' + options.name + ' .level').each(function (node) {
-        if (node.one('input[type=radio]').get('checked')) {
-            node.addClass('checked');
+        // Atto.
+        var editable = document.getElementById(textareaid + 'editable');
+        if (editable && editable.classList.contains('editor_atto_content')) {
+            return NS.attoAdapter(editable);
         }
-    });
-};
+        return null;
+    };
 
-M.gradingform_simplefeedbackrubric.levelclick = function(e, Y, name, autopopulatecomments) {
-    var el = e.target;
-    while (el && !el.hasClass('level')) {
-        el = el.get('parentNode');
-    }
-    if (!el) {
-        return;
-    }
-
-    if (autopopulatecomments) {
-        var editor = M.gradingform_simplefeedbackrubric.getEditor(Y);
-        if (!editor) return;
-        
-        var elementid = e._currentTarget.id;
-        var pattern = new RegExp(/(?:advancedgrading-criteria-)(.*?)(?:-levels-)(\d+)/);
-        var matches = elementid.match(pattern);
-        var criteria = matches[1];
-
-        // The current text in the comment.
-        var currentcommenttext = M.gradingform_simplefeedbackrubric.getEditorContent(Y, editor);
-
-        // The text in the rubric block which has been clicked.
-        var clickedleveltext = e._currentTarget.innerText.trim();
-
-        // The text in any previously selected rubric sibling block.
-        var siblingtext = null;
-        var siblingcriteria = null;
-        var siblinglevel = null;
-
-        el.siblings().each(function(sibling) {
-            if (sibling.hasClass('checked')) {
-                siblingtext = sibling._node.innerText;
-                var siblingid = sibling._node.id;
-                var siblingmatches = siblingid.match(pattern);
-                siblingcriteria = siblingmatches[1];
-                siblinglevel = siblingmatches[2];
-                return false;
+    /**
+     * Call back with the editor adapter once the editor has finished loading.
+     * TinyMCE loads asynchronously, after this script's init has run, so we poll briefly.
+     *
+     * @param {Object} options
+     * @param {Function} callback receives the adapter (or null on timeout)
+     */
+    NS.whenEditorReady = function(options, callback) {
+        var started = Date.now();
+        var check = function() {
+            var textareaid = NS.findEditorTextareaId(options);
+            var editor = NS.getEditorNow(textareaid);
+            if (editor) {
+                callback(editor);
+                return;
             }
-        });
-
-        // Construct the new text for the comment.
-        var newcommenttext = null;
-
-        // If a sibling rubric block is currently selected.
-        if (siblingtext) {
-            // If the current comment text already contains the selected sibling block text,
-            // replace the contained sibling text string with the clicked rubric string.
-            if (currentcommenttext.match(new RegExp('(<span name="comment-criteria-' + siblingcriteria + '">.*?<\/span>)'))) {
-                newcommenttext = currentcommenttext.replace(
-                    new RegExp(
-                        '(<span name="comment-criteria-' + siblingcriteria + '">.*?<\/span>)'),
-                        '<span name="comment-criteria-' + criteria + '"><p>' + clickedleveltext + '</p></span>'
-                );
-            } else {
-                // If the current comment text should contain the selected sibling block text.
-                newcommenttext = currentcommenttext + ' ' + '<span name="comment-criteria-' + criteria + '"><p>' + clickedleveltext + '</p></span>';
+            // A TinyMCE instance that exists but has not finished initialising.
+            var tiny = window.tinymce || window.tinyMCE;
+            var pending = textareaid && tiny && typeof tiny.get === 'function' ? tiny.get(textareaid) : null;
+            if (pending && !pending.initialized && typeof pending.on === 'function') {
+                pending.on('init', function() {
+                    callback(NS.tinyAdapter(pending));
+                });
+                return;
             }
-        } else {
-            // If no sibling rubric block is currently selected we are deselecting the rubric item,
-            // remove the rubric text string from the comment text.
-            if (el.hasClass('checked')) {
-                newcommenttext = currentcommenttext.replace(
-                    new RegExp('(<span name="comment-criteria-' + criteria + '">.*?<\/span>)'),
-                    '<span name="comment-criteria-' + criteria + '"></span>'
-                );
-            } else {
-                // If we are selecting the rubric item, add the rubric item text string to the comment text.
-                // If current comment text does not contain the clicked rubric item text.
-                if (!currentcommenttext.match(new RegExp('(<span name="comment-criteria-' + criteria + '">.*?<\/span>)'))) {
-                    newcommenttext = currentcommenttext + ' ' + '<span name="comment-criteria-' + criteria + '"><p>' + clickedleveltext + '</p></span>';
+            if (Date.now() - started > WAIT_TIMEOUT_MS) {
+                if (window.console) {
+                    window.console.warn('gradingform_simplefeedbackrubric: feedback editor not found, ' +
+                        'comments will not be auto-populated.');
+                }
+                callback(null);
+                return;
+            }
+            window.setTimeout(check, WAIT_INTERVAL_MS);
+        };
+        check();
+    };
+
+    /**
+     * Adapter for TinyMCE.
+     *
+     * @param {Object} ed TinyMCE editor
+     * @return {Object}
+     */
+    NS.tinyAdapter = function(ed) {
+        return {
+            type: 'tinymce',
+            getBody: function() {
+                return ed.getBody();
+            },
+            change: function(fn) {
+                var run = function() {
+                    fn(ed.getBody());
+                };
+                if (ed.undoManager && typeof ed.undoManager.transact === 'function') {
+                    ed.undoManager.transact(run);
                 } else {
-                    // Replace the contained sibling text string with the clicked rubric string.
-                    newcommenttext = currentcommenttext.replace(
-                        new RegExp(
-                            '(<span name="comment-criteria-' + criteria + '">.*?<\/span>)'),
-                            '<span name="comment-criteria-' + criteria + '"><p>' + clickedleveltext + '</p></span>'
-                    );
+                    run();
+                }
+                ed.setDirty(true);
+                if (typeof ed.dispatch === 'function') {
+                    ed.dispatch('change');
+                } else if (typeof ed.fire === 'function') {
+                    ed.fire('change');
+                }
+                ed.save();
+            }
+        };
+    };
+
+    /**
+     * Adapter for Atto.
+     *
+     * @param {HTMLElement} editable Atto's contenteditable div
+     * @return {Object}
+     */
+    NS.attoAdapter = function(editable) {
+        return {
+            type: 'atto',
+            getBody: function() {
+                return editable;
+            },
+            change: function(fn) {
+                fn(editable);
+                // Let Atto (and the form change checker) know the content changed.
+                editable.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+        };
+    };
+
+    /**
+     * Find the existing block for a criterion (new or legacy marker).
+     *
+     * @param {HTMLElement} body
+     * @param {String} criterionid
+     * @return {HTMLElement|null}
+     */
+    NS.findMarker = function(body, criterionid) {
+        return body.querySelector('[' + MARKER_ATTR + '="' + criterionid + '"]') ||
+            body.querySelector('span[name="' + LEGACY_NAME_PREFIX + criterionid + '"]');
+    };
+
+    /**
+     * Build the block holding a level's text.
+     *
+     * @param {Document} doc the editor's document
+     * @param {String} criterionid
+     * @param {String} text plain text, newlines become line breaks
+     * @return {HTMLElement}
+     */
+    NS.buildMarker = function(doc, criterionid, text) {
+        var p = doc.createElement('p');
+        p.setAttribute(MARKER_ATTR, criterionid);
+        var lines = text.split(/\r?\n/);
+        for (var i = 0; i < lines.length; i++) {
+            if (i > 0) {
+                p.appendChild(doc.createElement('br'));
+            }
+            p.appendChild(doc.createTextNode(lines[i]));
+        }
+        return p;
+    };
+
+    /**
+     * True if the editor holds nothing but empty paragraphs / line breaks.
+     *
+     * @param {HTMLElement} body
+     * @return {Boolean}
+     */
+    NS.isEmpty = function(body) {
+        return body.textContent.replace(/ /g, ' ').trim() === '' &&
+            !body.querySelector('img, video, audio, iframe, object, table, [' + MARKER_ATTR + ']');
+    };
+
+    /**
+     * Put a level's text into the editor for one criterion, or remove it.
+     *
+     * @param {Object} editor adapter
+     * @param {Object} options init options
+     * @param {String} criterionid
+     * @param {String|null} text null removes the criterion's text
+     */
+    NS.updateCriterionText = function(editor, options, criterionid, text) {
+        editor.change(function(body) {
+            var doc = body.ownerDocument;
+            var existing = NS.findMarker(body, criterionid);
+
+            if (text === null) {
+                if (existing) {
+                    existing.parentNode.removeChild(existing);
+                }
+                return;
+            }
+
+            var block = NS.buildMarker(doc, criterionid, text);
+            if (existing) {
+                existing.parentNode.replaceChild(block, existing);
+                return;
+            }
+
+            // Clear the editor's empty placeholder paragraph, if that's all there is.
+            if (NS.isEmpty(body)) {
+                while (body.firstChild) {
+                    body.removeChild(body.firstChild);
                 }
             }
+
+            // Keep criteria in rubric order, if that option is on.
+            if (options.criterionordering && options.criterion) {
+                var order = options.criterion.map(String);
+                var pos = order.indexOf(String(criterionid));
+                for (var i = pos + 1; pos >= 0 && i < order.length; i++) {
+                    var next = NS.findMarker(body, order[i]);
+                    if (next) {
+                        next.parentNode.insertBefore(block, next);
+                        return;
+                    }
+                }
+            }
+            body.appendChild(block);
+        });
+    };
+
+    /**
+     * Plain text of a level's definition.
+     *
+     * @param {HTMLElement} levelnode the .level table cell
+     * @return {String}
+     */
+    NS.getLevelText = function(levelnode) {
+        var def = levelnode.querySelector('.definition');
+        var text = def ? (def.innerText || def.textContent) : (levelnode.innerText || levelnode.textContent);
+        return text.trim();
+    };
+
+    /**
+     * Called for each simplefeedbackrubric on the page.
+     *
+     * @param {Object} Y YUI instance
+     * @param {Object} options
+     */
+    NS.init = function(Y, options) {
+        var state = {editor: null};
+        var selector = '#simplefeedbackrubric-' + options.name;
+
+        // Level selection always works, whether or not an editor is found.
+        Y.all(selector + ' .radio').setStyle('display', 'none');
+        Y.all(selector + ' .level').each(function(node) {
+            var radio = node.one('input[type=radio]');
+            if (radio && radio.get('checked')) {
+                node.addClass('checked');
+            }
+        });
+        Y.on('click', function(e) {
+            NS.levelclick(e, Y, options, state);
+        }, selector + ' .level');
+
+        if (options.autopopulatecomments) {
+            NS.whenEditorReady(options, function(editor) {
+                state.editor = editor;
+            });
+        }
+    };
+
+    /**
+     * Click on a level.
+     *
+     * @param {Object} e YUI event
+     * @param {Object} Y YUI instance
+     * @param {Object} options
+     * @param {Object} state
+     */
+    NS.levelclick = function(e, Y, options, state) {
+        var el = e.currentTarget;
+        if (!el || !el.hasClass('level')) {
+            el = e.target;
+            while (el && !el.hasClass('level')) {
+                el = el.get('parentNode');
+            }
+        }
+        if (!el) {
+            return;
+        }
+        e.preventDefault();
+
+        var radio = el.one('input[type=radio]');
+        var deselecting = radio && radio.get('checked');
+
+        // Update the selection.
+        el.siblings().removeClass('checked');
+        if (!deselecting) {
+            if (radio) {
+                radio.set('checked', true);
+            }
+            el.addClass('checked');
+        } else {
+            el.removeClass('checked');
+            el.get('parentNode').all('input[type=radio]').set('checked', false);
         }
 
-        if (newcommenttext) {
-            M.gradingform_simplefeedbackrubric.setEditorContent(Y, editor, newcommenttext);
-            var x = window.scrollX, y = window.scrollY;
-            M.gradingform_simplefeedbackrubric.focusEditor(Y, editor);
-            window.scrollTo(x, y);
+        if (!options.autopopulatecomments) {
+            return;
         }
-    }
+        var editor = state.editor || NS.getEditorNow(NS.findEditorTextareaId(options));
+        if (!editor) {
+            return;
+        }
+        state.editor = editor;
 
-    e.preventDefault();
-    el.siblings().removeClass('checked');
-    var chb = el.one('input[type=radio]');
-    if (!chb.get('checked')) {
-        chb.set('checked', true);
-        el.addClass('checked');
-    } else {
-        el.removeClass('checked');
-        el.get('parentNode').all('input[type=radio]').set('checked', false);
-    }
-};
+        var matches = (el.get('id') || '').match(/-criteria-(.+?)-levels-(\d+)$/);
+        if (!matches) {
+            return;
+        }
+        var criterionid = matches[1];
+        var text = deselecting ? null : NS.getLevelText(el.getDOMNode());
+
+        var x = window.scrollX, y = window.scrollY;
+        NS.updateCriterionText(editor, options, criterionid, text);
+        window.scrollTo(x, y);
+    };
+})(M.gradingform_simplefeedbackrubric);

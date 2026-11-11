@@ -27,6 +27,11 @@
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+use core_external\external_format_value;
+use core_external\external_multiple_structure;
+use core_external\external_single_structure;
+use core_external\external_value;
+
 defined('MOODLE_INTERNAL') || die();
 
 require_once($CFG->dirroot.'/grade/grading/form/lib.php');
@@ -71,7 +76,7 @@ class gradingform_simplefeedbackrubric_controller extends gradingform_controller
      * @param settings_navigation $settingsnav {@link settings_navigation}
      * @param navigation_node $node {@link navigation_node}
      */
-    public function extend_settings_navigation(settings_navigation $settingsnav, navigation_node $node=null) {
+    public function extend_settings_navigation(settings_navigation $settingsnav, ?navigation_node $node = null) {
         $node->add(get_string('definesimplefeedbackrubric', 'gradingform_simplefeedbackrubric'),
             $this->get_editor_url(), settings_navigation::TYPE_CUSTOM,
             null, null, new pix_icon('icon', '', 'gradingform_simplefeedbackrubric'));
@@ -86,7 +91,7 @@ class gradingform_simplefeedbackrubric_controller extends gradingform_controller
      * @param global_navigation $navigation {@link global_navigation}
      * @param navigation_node $node {@link navigation_node}
      */
-    public function extend_navigation(global_navigation $navigation, navigation_node $node=null) {
+    public function extend_navigation(global_navigation $navigation, ?navigation_node $node = null) {
         if (has_capability('moodle/grade:managegradingforms', $this->get_context())) {
             // No need for preview if user can manage forms, he will have link to manage.php in settings instead.
             return;
@@ -491,6 +496,7 @@ class gradingform_simplefeedbackrubric_controller extends gradingform_controller
         $criteria = $this->definition->simplefeedbackrubric_criteria;
         $options = $this->get_options();
         $simplefeedbackrubric = '';
+        $showdescription = false;
         if (has_capability('moodle/grade:managegradingforms', $page->context)) {
             $showdescription = true;
         } else {
@@ -786,14 +792,17 @@ class gradingform_simplefeedbackrubric_instance extends gradingform_instance {
                 }
             }
         }
-        if (!$DB->record_exists('gradingform_sfrbric_grades', array('instanceid' => $this->get_id()))) {
-            $newrecord = new stdClass();
-            $newrecord->instanceid = $this->get_id();
-            $newrecord->grade = $data['grade'];
-            $DB->insert_record('gradingform_sfrbric_grades', $newrecord);
-        } else {
-            $sql = "UPDATE {gradingform_sfrbric_grades} SET grade = ? WHERE instanceid = ?";
-            $DB->execute($sql, array($data['grade'], $this->get_id()));
+        // Only store the grade when the grade dropdown was actually submitted.
+        if (isset($data['grade']) && $data['grade'] !== '') {
+            if (!$DB->record_exists('gradingform_sfrbric_grades', array('instanceid' => $this->get_id()))) {
+                $newrecord = new stdClass();
+                $newrecord->instanceid = $this->get_id();
+                $newrecord->grade = $data['grade'];
+                $DB->insert_record('gradingform_sfrbric_grades', $newrecord);
+            } else {
+                $sql = "UPDATE {gradingform_sfrbric_grades} SET grade = ? WHERE instanceid = ?";
+                $DB->execute($sql, array($data['grade'], $this->get_id()));
+            }
         }
         $this->get_simplefeedbackrubric_filling(true);
     }
@@ -801,12 +810,13 @@ class gradingform_simplefeedbackrubric_instance extends gradingform_instance {
     /**
      * Calculates the grade to be pushed to the gradebook
      *
-     * @return float|int the valid grade from $this->get_controller()->get_grade_range()
+     * @return int|null the valid grade from $this->get_controller()->get_grade_range(), or null if no grade is stored yet
      */
     public function get_grade() {
         global $DB;
 
-        return $DB->get_field('gradingform_sfrbric_grades', 'grade', array('instanceid' => $this->get_id()));
+        $grade = $DB->get_field('gradingform_sfrbric_grades', 'grade', array('instanceid' => $this->get_id()));
+        return ($grade === false) ? null : (int)$grade;
     }
 
     /**
@@ -827,7 +837,9 @@ class gradingform_simplefeedbackrubric_instance extends gradingform_instance {
                     array(array(
                         'name' => $gradingformelement->getName(), 'criterion' => array_keys($criteria),
                         'criterionordering' => $options['criterionordering'],
-                        'autopopulatecomments' => $options['autopopulatecomments']
+                        'autopopulatecomments' => $options['autopopulatecomments'],
+                        // Textarea id of the assignment's feedback comments editor.
+                        'editorid' => 'id_assignfeedbackcomments_editor',
                     )), true, $module);
                     $mode = gradingform_simplefeedbackrubric_controller::DISPLAY_EVAL;
         } else {

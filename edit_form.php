@@ -218,6 +218,7 @@ class gradingform_simplefeedbackrubric_editsimplefeedbackrubric extends moodlefo
                 return $el;
             }
         }
-        return null;
+        $notfound = null;
+        return $notfound;
     }
 }

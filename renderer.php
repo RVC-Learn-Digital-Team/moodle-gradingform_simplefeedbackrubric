@@ -244,7 +244,8 @@ class gradingform_simplefeedbackrubric_renderer extends plugin_renderer_base {
      * @param string $criteriastr evaluated templates for this simplefeedbackrubric's criteria
      * @return string
      */
-    protected function simplefeedbackrubric_template($mode, $options, $elementname, $criteriastr, $grademenu = null, $grade) {
+    protected function simplefeedbackrubric_template($mode, $options, $elementname, $criteriastr,
+            $grademenu = null, $grade = null) {
         $classsuffix = ''; // CSS suffix for class of the main div. Depends on the mode.
         switch ($mode) {
             case gradingform_simplefeedbackrubric_controller::DISPLAY_EDIT_FULL:

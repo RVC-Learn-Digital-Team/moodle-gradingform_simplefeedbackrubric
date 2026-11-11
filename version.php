@@ -30,6 +30,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component  = 'gradingform_simplefeedbackrubric';
-$plugin->version    = 2026033101;
-$plugin->requires   = 2014110400;
+$plugin->version    = 2026111001;
+$plugin->requires   = 2024100700; // Moodle 4.5 LTS.
+$plugin->supported  = [405, 501];
 $plugin->maturity   = MATURITY_STABLE;
