@@ -24,26 +24,26 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
     var LEGACY_NAME_PREFIX = 'comment-criteria-';
     var DEFAULT_EDITOR_ID = 'id_assignfeedbackcomments_editor';
     var DEFAULT_EDITOR_NAME = 'assignfeedbackcomments_editor[text]';
+    var COURSEWORK_EDITOR_ID = 'feedback_comment';
+    var COURSEWORK_EDITOR_NAME = 'feedbackcomment[text]';
     var WAIT_INTERVAL_MS = 250;
     var WAIT_TIMEOUT_MS = 30000;
+    var pendingFeedback = new WeakMap();
 
     /**
-     * Work out the id of the feedback textarea.
+     * Find the feedback textarea in the rubric's grading form.
      *
+     * @param {HTMLFormElement} form
      * @param {Object} options init options from PHP
-     * @return {String|null}
+     * @return {HTMLTextAreaElement|null}
      */
-    NS.findEditorTextareaId = function(options) {
-        var id = (options && options.editorid) || DEFAULT_EDITOR_ID;
-        if (document.getElementById(id)) {
-            return id;
-        }
+    NS.findEditorTextarea = function(form, options) {
+        var id = options.editorid || DEFAULT_EDITOR_ID;
         // Forms can be rendered with a suffixed id (e.g. in the grader app); find it by name.
-        var byname = document.querySelector('textarea[name="' + DEFAULT_EDITOR_NAME + '"]');
-        if (byname && byname.id) {
-            return byname.id;
-        }
-        return null;
+        return form.querySelector('textarea#' + CSS.escape(id)) ||
+            form.querySelector('textarea#' + COURSEWORK_EDITOR_ID) ||
+            form.querySelector('textarea[id][name="' + DEFAULT_EDITOR_NAME + '"], ' +
+                'textarea[id][name="' + COURSEWORK_EDITOR_NAME + '"]');
     };
 
     /**
@@ -54,80 +54,79 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
      * For a moment tinymce.get(id) can still return the old, detached editor.
      *
      * @param {Object} ed TinyMCE editor
+     * @param {HTMLTextAreaElement} textarea source of the current feedback editor
      * @return {Boolean}
      */
-    NS.isLiveTinyEditor = function(ed) {
-        if (!ed || !ed.initialized || ed.removed || ed.destroyed) {
+    NS.isLiveTinyEditor = function(ed, textarea) {
+        if (!ed || !ed.initialized || ed.removed || ed.destroyed || ed.getElement() !== textarea) {
             return false;
         }
-        var body = ed.getBody();
-        var container = typeof ed.getContainer === 'function' ? ed.getContainer() : null;
-        var textarea = typeof ed.getElement === 'function' ? ed.getElement() : null;
-        return !!(body && container && document.body.contains(container) &&
-            (!textarea || document.body.contains(textarea)));
+        var container = ed.getContainer();
+        return !!(ed.getBody() && container && container.isConnected && textarea.isConnected);
     };
 
     /**
      * Return an editor adapter for the feedback editor if it is ready, otherwise null.
      *
-     * @param {String} textareaid
+     * @param {HTMLTextAreaElement|null} textarea
+     * @param {HTMLFormElement} form
      * @return {Object|null}
      */
-    NS.getEditorNow = function(textareaid) {
-        if (!textareaid) {
+    NS.getEditorNow = function(textarea, form) {
+        if (!textarea || !textarea.id || textarea.disabled || textarea.readOnly) {
             return null;
         }
         // TinyMCE.
         var tiny = window.tinymce || window.tinyMCE;
         if (tiny && typeof tiny.get === 'function') {
-            var ed = tiny.get(textareaid);
-            if (NS.isLiveTinyEditor(ed)) {
+            var ed = tiny.get(textarea.id);
+            if (NS.isLiveTinyEditor(ed, textarea)) {
                 return NS.tinyAdapter(ed);
             }
         }
         // Atto.
-        var editable = document.getElementById(textareaid + 'editable');
-        if (editable && editable.classList.contains('editor_atto_content')) {
+        var editable = form.querySelector('.editor_atto_content#' + CSS.escape(textarea.id + 'editable'));
+        if (editable) {
             return NS.attoAdapter(editable);
         }
         return null;
     };
 
     /**
-     * Call back with the editor adapter once the editor has finished loading.
-     * TinyMCE loads asynchronously, after this script's init has run, so we poll briefly.
+     * Apply the latest feedback choice for a criterion when its editor is ready.
      *
+     * @param {HTMLElement} criterion criterion row
+     * @param {HTMLFormElement} form grading form at the time of the click
      * @param {Object} options
-     * @param {Function} callback receives the adapter (or null on timeout)
+     * @param {Function} callback receives the editor adapter
      */
-    NS.whenEditorReady = function(options, callback) {
+    NS.whenEditorReady = function(criterion, form, options, callback) {
         var started = Date.now();
         var check = function() {
-            var textareaid = NS.findEditorTextareaId(options);
-            var editor = NS.getEditorNow(textareaid);
+            if (pendingFeedback.get(criterion) !== check) {
+                return;
+            }
+            if (!criterion.isConnected || criterion.closest('form') !== form) {
+                pendingFeedback.delete(criterion);
+                return;
+            }
+            var editor = NS.getEditorNow(NS.findEditorTextarea(form, options), form);
             if (editor) {
+                pendingFeedback.delete(criterion);
                 callback(editor);
                 return;
             }
-            // A TinyMCE instance that exists but has not finished initialising.
-            var tiny = window.tinymce || window.tinyMCE;
-            var pending = textareaid && tiny && typeof tiny.get === 'function' ? tiny.get(textareaid) : null;
-            if (pending && !pending.initialized && typeof pending.on === 'function') {
-                pending.on('init', function() {
-                    callback(NS.tinyAdapter(pending));
-                });
-                return;
-            }
             if (Date.now() - started > WAIT_TIMEOUT_MS) {
+                pendingFeedback.delete(criterion);
                 if (window.console) {
                     window.console.warn('gradingform_simplefeedbackrubric: feedback editor not found, ' +
                         'comments will not be auto-populated.');
                 }
-                callback(null);
                 return;
             }
             window.setTimeout(check, WAIT_INTERVAL_MS);
         };
+        pendingFeedback.set(criterion, check);
         check();
     };
 
@@ -314,7 +313,6 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
      * @param {Object} options
      */
     NS.init = function(Y, options) {
-        var state = {editor: null};
         var selector = '#simplefeedbackrubric-' + options.name;
 
         // Level selection always works, whether or not an editor is found.
@@ -326,26 +324,17 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
             }
         });
         Y.on('click', function(e) {
-            NS.levelclick(e, Y, options, state);
+            NS.levelclick(e, options);
         }, selector + ' .level');
-
-        if (options.autopopulatecomments) {
-            // Only used to report (in the console) when the editor never turns up.
-            NS.whenEditorReady(options, function() {
-                return;
-            });
-        }
     };
 
     /**
      * Click on a level.
      *
      * @param {Object} e YUI event
-     * @param {Object} Y YUI instance
      * @param {Object} options
-     * @param {Object} state
      */
-    NS.levelclick = function(e, Y, options, state) {
+    NS.levelclick = function(e, options) {
         var el = e.currentTarget;
         if (!el || !el.hasClass('level')) {
             el = e.target;
@@ -376,10 +365,10 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
         if (!options.autopopulatecomments) {
             return;
         }
-        // Look the editor up on every click: in the grader the panel (and its editor) is
-        // replaced for each student, so a reference kept from earlier may be stale.
-        var editor = NS.getEditorNow(NS.findEditorTextareaId(options));
-        if (!editor) {
+        var node = el.getDOMNode();
+        var form = node.closest('form');
+        var criterion = node.closest('.criterion');
+        if (!form || !criterion) {
             return;
         }
 
@@ -388,10 +377,12 @@ M.gradingform_simplefeedbackrubric = M.gradingform_simplefeedbackrubric || {};
             return;
         }
         var criterionid = matches[1];
-        var text = deselecting ? null : NS.getLevelText(el.getDOMNode());
+        var text = deselecting ? null : NS.getLevelText(node);
 
-        var x = window.scrollX, y = window.scrollY;
-        NS.updateCriterionText(editor, options, criterionid, text);
-        window.scrollTo(x, y);
+        NS.whenEditorReady(criterion, form, options, function(editor) {
+            var x = window.scrollX, y = window.scrollY;
+            NS.updateCriterionText(editor, options, criterionid, text);
+            window.scrollTo(x, y);
+        });
     };
 })(M.gradingform_simplefeedbackrubric);

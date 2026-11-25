@@ -33,6 +33,8 @@ depends on which editor the grader is using:
 | Atto (Moodle 4.5 only; removed from core in 5.0) | Supported. |
 | Plain text area | Auto-populate is not supported. |
 
+The feedback editors used by both Assignment and Coursework activities are supported.
+
 Each criterion's text is inserted as a paragraph marked with `data-sfr-criterion="<criterion id>"`, in
 rubric order when "criterion ordering" is on. Choosing another level replaces that paragraph, and
 deselecting a level removes it. Feedback written by older versions of the plugin (which used
